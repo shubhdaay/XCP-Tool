@@ -1,0 +1,665 @@
+import customtkinter as ctk
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pandas as pd
+import asyncio
+from playwright.async_api import async_playwright
+import nest_asyncio
+import logging
+import os
+import datetime
+import glob
+import pyautogui
+import time
+
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filename='xcp_tool.log'
+)
+
+class XCPToolGUI(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        # Initialize event loop
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+        # Configure window
+        self.title("XCP Tool Automation")
+        self.geometry("1000x600")
+
+        # Create main container
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Create main frame
+        self.main_frame = ctk.CTkFrame(self)
+        self.main_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.main_frame.grid_columnconfigure(0, weight=1)
+
+        # Title
+        self.title_label = ctk.CTkLabel(
+            self.main_frame, 
+            text="Pre -XCP Tool Automation",
+            font=ctk.CTkFont(size=24, weight="bold")
+        )
+        self.title_label.grid(row=0, column=0, pady=20, padx=20)
+
+        # File Selection Frame
+        self.file_frame = ctk.CTkFrame(self.main_frame)
+        self.file_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        self.file_frame.grid_columnconfigure(1, weight=1)
+
+        self.file_label = ctk.CTkLabel(
+            self.file_frame, 
+            text="Input Excel File:",
+            font=ctk.CTkFont(size=14)
+        )
+        self.file_label.grid(row=0, column=0, padx=10, pady=10)
+
+        self.file_path = ctk.CTkEntry(self.file_frame)
+        self.file_path.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+
+        self.browse_button = ctk.CTkButton(
+            self.file_frame,
+            text="Browse",
+            command=self.browse_file
+        )
+        self.browse_button.grid(row=0, column=2, padx=10, pady=10)
+
+        # Add Program dropdown to the GUI
+        self.program_var = tk.StringVar(value="FS")
+        self.program_label = ctk.CTkLabel(
+            self.file_frame,
+            text="Program:",
+            font=ctk.CTkFont(size=14)
+        )
+        self.program_label.grid(row=1, column=0, padx=10, pady=10)
+        self.program_dropdown = ctk.CTkComboBox(
+            self.file_frame,
+            variable=self.program_var,
+            values=["FS", "CG, PA, and PS programs"],
+            width=200
+        )
+        self.program_dropdown.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
+
+        # Progress Frame
+        self.progress_frame = ctk.CTkFrame(self.main_frame)
+        self.progress_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
+        self.progress_frame.grid_columnconfigure(0, weight=1)
+
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame)
+        self.progress_bar.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
+        self.progress_bar.set(0)
+
+        self.status_label = ctk.CTkLabel(
+            self.progress_frame,
+            text="Status: Ready",
+            font=ctk.CTkFont(size=12)
+        )
+        self.status_label.grid(row=1, column=0, pady=5)
+
+        # Log Frame
+        self.log_frame = ctk.CTkFrame(self.main_frame)
+        self.log_frame.grid(row=4, column=0, padx=20, pady=10, sticky="ew")
+        self.log_frame.grid_columnconfigure(0, weight=1)
+
+        self.log_text = ctk.CTkTextbox(
+            self.log_frame,
+            height=200,
+            font=ctk.CTkFont(size=12)
+        )
+        self.log_text.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+
+        # Buttons Frame
+        self.button_frame = ctk.CTkFrame(self.main_frame)
+        self.button_frame.grid(row=5, column=0, padx=20, pady=10)
+
+        self.start_button = ctk.CTkButton(
+            self.button_frame,
+            text="Start Processing",
+            command=self.start_processing,
+            width=150
+        )
+        self.start_button.grid(row=0, column=0, padx=10)
+
+        self.stop_button = ctk.CTkButton(
+            self.button_frame,
+            text="Stop",
+            command=self.stop_processing,
+            width=150,
+            state="disabled"
+        )
+        self.stop_button.grid(row=0, column=1, padx=10)
+
+        # Initialize processing flag
+        self.is_processing = False
+
+        # Keep the event loop running with Tkinter
+        self.after(100, self._run_asyncio_loop)
+
+    def browse_file(self):
+        filename = filedialog.askopenfilename(
+            filetypes=[("Excel files", "*.xlsx *.xls")]
+        )
+        if filename:
+            self.file_path.delete(0, tk.END)
+            self.file_path.insert(0, filename)
+            self.update_log(f"Selected file: {filename}")
+
+    def update_log(self, message):
+        self.log_text.insert("end", f"{message}\n")
+        self.log_text.see("end")
+        logging.info(message)
+
+    def update_status(self, message):
+        self.status_label.configure(text=f"Status: {message}")
+        logging.info(f"Status update: {message}")
+
+    def update_progress(self, value):
+        self.progress_bar.set(value)
+
+    async def process_asins(self):
+        import datetime
+        playwright = None
+        browser = None
+        context = None
+        page = None
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        export_dir = os.path.join(script_dir, f"exports_{datetime.date.today()}")
+        os.makedirs(export_dir, exist_ok=True)
+        try:
+            # Maximize window
+            self.update_log("Maximizing window using PyAutoGUI...")
+            pyautogui.hotkey('win', 'up')
+            time.sleep(1)
+
+            input_file = self.file_path.get()
+            if not input_file:
+                messagebox.showerror("Error", "Please select an input file")
+                return
+
+            self.update_status("Initializing...")
+            self.update_progress(0.1)
+
+            df = pd.read_excel(input_file)
+            self.update_log(f"Successfully loaded {len(df)} rows from Excel")
+            self.update_progress(0.2)
+
+            # --- FS Program Pre-filtering ---
+            program_selected = self.program_var.get()
+            if program_selected == "FS":
+                # fs_pre_filter now returns (df, playwright, browser, context, page)
+                result = await self.fs_pre_filter(df, export_dir)
+                if result is None or result[0] is None or result[0].empty:
+                    self.update_log("No ASINs left after FS pre-filter. Exiting.")
+                    self.is_processing = False
+                    self.start_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
+                    return
+                df, playwright, browser, context, page = result
+                self.update_log(f"Proceeding to main script with {len(df)} ASINs after FS pre-filter.")
+                # Ensure we are on the class search page before main script
+                await page.goto('https://www.cp-central.catalog.amazon.dev/#/class/search')
+                await page.wait_for_selector('#awsui-input-0', timeout=10000)
+                await page.wait_for_timeout(500)
+            else:
+                playwright = await async_playwright().start()
+                browser = await playwright.chromium.launch(headless=False, args=['--start-maximized'])
+                context = await browser.new_context(viewport={"width": 1920, "height": 1080})
+                page = await context.new_page()
+                self.update_log("Browser initialized successfully")
+                self.update_progress(0.3)
+                await page.goto('https://www.cp-central.catalog.amazon.dev/#/class/search')
+                self.update_log("Navigated to CP Central")
+                self.update_progress(0.4)
+                # SSO Login Handling
+                if "SSO/redirect" in page.url or "midway-auth.amazon.com" in page.url:
+                    self.update_log("SSO login required. Please complete the login in the opened browser window.")
+                    try:
+                        await page.wait_for_selector('#awsui-input-0', timeout=0)
+                        self.update_log("Login successful. Continuing automation.")
+                    except Exception as e:
+                        self.update_log(f"Error waiting for login: {str(e)}")
+                        return
+                await page.wait_for_selector('#awsui-input-0', timeout=10000)
+                await page.wait_for_timeout(500)
+
+            class_search_url = 'https://www.cp-central.catalog.amazon.dev/#/class/search'
+            for class_name, group in df.groupby('Class'):
+                if not self.is_processing:
+                    self.update_log("Processing stopped by user")
+                    break
+                self.update_log(f"Processing class: {class_name}")
+                try:
+                    await self.process_class(page, class_search_url, class_name, group, export_dir)
+                except Exception as e:
+                    self.update_log(f"Error processing class {class_name}: {str(e)}")
+                    continue
+            self.update_status("Processing complete")
+            self.update_progress(1.0)
+        except Exception as e:
+            self.update_log(f"Error: {str(e)}")
+            logging.error(f"Error in process_asins: {str(e)}", exc_info=True)
+            messagebox.showerror("Error", str(e))
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                    self.update_log("Browser closed")
+                except Exception as e:
+                    logging.error(f"Error closing browser: {str(e)}")
+            if playwright:
+                await playwright.stop()
+            self.is_processing = False
+            self.start_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
+            # Only collate class exports if not FS program
+            if self.program_var.get() != "FS":
+                await self.collate_exports(export_dir)
+            else:
+                self.update_log("FS program: Skipping collation, as only filtered ASINs from FS Pre-filtering are used for main script.")
+
+    async def fs_pre_filter(self, df, export_dir):
+        playwright = None
+        browser = None
+        context = None
+        page = None
+        self.update_log("Maximizing window using PyAutoGUI...")
+        pyautogui.hotkey('win', 'up')
+        time.sleep(1)
+        try:
+            self.update_status("FS Pre-filtering...")
+            self.update_progress(0.1)
+            program_selected = self.program_var.get()
+            if program_selected == "FS":
+                self.update_log("FS program selected. Checking ASIN membership before main script...")
+                _playwright = await async_playwright().start()
+                _browser = await _playwright.chromium.launch(headless=False, args=['--start-maximized'])
+                _context = await _browser.new_context(viewport=None)
+                _page = await _context.new_page()
+                await _page.goto('https://www.cp-central.catalog.amazon.dev/#/members', wait_until="domcontentloaded")
+                self.update_log("Navigated to Members page for FS pre-filter. Please complete login if required.")
+                try:
+                    await _page.wait_for_selector('textarea[placeholder*="Enter ASIN"]', timeout=0)
+                    self.update_log("Login complete. Continuing FS pre-filter.")
+                except Exception as e:
+                    self.update_log(f"Error waiting for login/ASIN textarea: {str(e)}")
+                    await _browser.close()
+                    await _playwright.stop()
+                    return
+                asin_list = df['asin_id'].astype(str).tolist()
+                asin_text = '\n'.join(asin_list)
+                asin_box = _page.locator('textarea[placeholder*="Enter ASIN"]')
+                await asin_box.fill(asin_text)
+                self.update_log(f"Filled ASINs textarea with {len(asin_list)} ASINs.")
+                dropdown_trigger = await _page.query_selector('#awsui-multiselect-0-textbox')
+                if dropdown_trigger:
+                    await dropdown_trigger.click()
+                    self.update_log("Clicked dropdown by id 'awsui-multiselect-0-textbox'.")
+                else:
+                    dropdown_trigger = await _page.query_selector('input[placeholder*="Program"], input[type="search"]')
+                    if dropdown_trigger:
+                        await dropdown_trigger.click()
+                        self.update_log("Clicked dropdown by input selector.")
+                    else:
+                        parent = await _page.query_selector('input[placeholder*="Program"], input[type="search"] >> xpath=..')
+                        if parent:
+                            await parent.click()
+                            self.update_log("Clicked dropdown parent element.")
+                        else:
+                            self.update_log("Could not find Programs dropdown trigger. Aborting FS pre-filter.")
+                            await _browser.close()
+                            await _playwright.stop()
+                            return
+                await asyncio.sleep(1)
+                search_input = await _page.query_selector('#awsui-input-0')
+                if not search_input:
+                    self.update_log("Could not find search input with #awsui-input-0. Aborting.")
+                    await _browser.close()
+                    await _playwright.stop()
+                    return
+                await search_input.focus()
+                await search_input.click()
+                await search_input.fill('')
+                await search_input.type('Food Safety', delay=30)
+                self.update_log("Typed 'Food Safety' in dropdown search input using #awsui-input-0.")
+                found = False
+                for _ in range(10):
+                    options = await _page.query_selector_all('.awsui-select-option-label-content')
+                    for option in options:
+                        text = (await option.inner_text()).strip().lower()
+                        if text == 'food safety':
+                            parent = await option.evaluate_handle('el => el.closest("li")')
+                            if parent:
+                                await parent.click()
+                                self.update_log("Clicked 'Food Safety' option by text.")
+                                found = True
+                                break
+                    if found:
+                        break
+                    await asyncio.sleep(0.2)
+                if not found:
+                    self.update_log("Could not find 'Food Safety' option by text, using ArrowDown+Enter fallback.")
+                    await search_input.focus()
+                    await _page.keyboard.press('ArrowDown')
+                    await _page.keyboard.press('Enter')
+                search_btn = _page.locator('.awsui-button-variant-primary')
+                for _ in range(20):
+                    if await search_btn.is_enabled():
+                        break
+                    await asyncio.sleep(0.5)
+                try:
+                    await search_btn.wait_for(state="visible", timeout=10000)
+                    await search_btn.click()
+                    self.update_log("Clicked Search button.")
+                except Exception as e:
+                    self.update_log(f"Could not click Search button: {str(e)}")
+                    await _browser.close()
+                    await _playwright.stop()
+                    return
+                # Wait for Export button to appear (instead of fixed 50s wait)
+                self.update_log("Waiting for Export button to appear...")
+                export_btn = _page.locator('span[awsui-button-region="text"]:text-is("Export")')
+                try:
+                    await export_btn.wait_for(state="visible", timeout=30000)  # Wait up to 30s
+                    await export_btn.click()
+                    self.update_log("Clicked Export button using span selector.")
+                except Exception as e:
+                    screenshot_path = os.path.join(export_dir, f"export_btn_notfound_{datetime.datetime.now().strftime('%H%M%S')}.png")
+                    await _page.screenshot(path=screenshot_path)
+                    self.update_log(f"Export button not found or not clickable: {str(e)}. Screenshot saved: {screenshot_path}")
+                    await _browser.close()
+                    await _playwright.stop()
+                    return
+                try:
+                    async with _page.expect_download() as download_info:
+                        await export_btn.click(force=True)
+                    download = await download_info.value
+                    member_export_file = os.path.join(export_dir, f"fs_membership_{datetime.date.today()}.xlsx")
+                    await download.save_as(member_export_file)
+                    self.update_log(f"Downloaded FS membership export: {member_export_file}")
+                except Exception as e:
+                    screenshot_path = os.path.join(export_dir, f"export_btn_error_{datetime.datetime.now().strftime('%H%M%S')}.png")
+                    await _page.screenshot(path=screenshot_path)
+                    self.update_log(f"Could not click or download from Export button: {str(e)}. Screenshot saved: {screenshot_path}")
+                    await _browser.close()
+                    await _playwright.stop()
+                    return
+                # After download, check if the file is a valid Excel file, else convert to CSV
+                import shutil
+                try:
+                    pd.read_excel(member_export_file)
+                except Exception:
+                    # Try reading as CSV
+                    try:
+                        df_csv = pd.read_csv(member_export_file)
+                        csv_file = member_export_file.replace('.xlsx', '.csv')
+                        df_csv.to_csv(csv_file, index=False)
+                        self.update_log(f"Downloaded file was CSV, saved as: {csv_file}")
+                        try:
+                            os.remove(member_export_file)
+                        except Exception:
+                            pass
+                        member_export_file = csv_file
+                        member_df = df_csv  # Use the DataFrame directly
+                    except Exception as e:
+                        self.update_log(f"Downloaded file is not Excel or CSV: {str(e)}")
+                        return
+                else:
+                    member_df = pd.read_excel(member_export_file)
+                # Enhanced filtering: Exclude ASINs where isMember == 'yes' for that class
+                if 'isMember' in member_df.columns and 'ASIN' in member_df.columns and 'Class' in member_df.columns:
+                    filtered_df = df.copy()
+                    for class_name in df['Class'].unique():
+                        class_asins = member_df[
+                            (member_df['Class'] == class_name) & \
+                            (member_df['isMember'].astype(str).str.lower() == 'yes')
+                        ]['ASIN'].astype(str).tolist()
+                        filtered_df = filtered_df[~(
+                            (filtered_df['Class'] == class_name) & \
+                            (filtered_df['asin_id'].astype(str).isin(class_asins))
+                        )]
+                    self.update_log(f"Filtered out ASINs with isMember='yes' for their class. {len(filtered_df)} ASINs remain for main script.")
+                    df = filtered_df
+                else:
+                    self.update_log("Warning: 'isMember', 'ASIN', or 'Class' column not found in export. No ASINs filtered.")
+                # Instead of closing browser/context, return them for reuse
+                return df, _playwright, _browser, _context, _page
+        except Exception as e:
+            self.update_log(f"Error during FS pre-filtering: {str(e)}")
+            return None
+
+    async def process_class(self, page, class_search_url, class_name, group, export_dir):
+        # Find and fill class input
+        input_box = page.locator('input[placeholder*="class name"]')
+        found = await self.wait_for_visible_enabled(input_box, page)
+        if not found:
+            self.update_log(f"Could not find class input for '{class_name}'. Skipping class.")
+            return
+        await input_box.scroll_into_view_if_needed()
+        await input_box.focus()
+        await page.wait_for_timeout(100)
+        await input_box.fill('')
+        await input_box.type(class_name, delay=30)
+        await page.keyboard.press('Enter')
+        await page.wait_for_timeout(500)
+        self.update_log(f"Class name '{class_name}' entered successfully.")
+        # Click class link
+        class_link = page.locator(f"a:text-is('{class_name}')")
+        await class_link.first.wait_for(timeout=5000)
+        await class_link.first.click()
+        await page.wait_for_timeout(1000)
+        # Click 'New sample ASINs test'
+        await self.click_sample_test_btn(page)
+        await page.wait_for_timeout(1000)
+        # Uncheck box
+        await self.uncheck_sample_asins_box(page)
+        await page.wait_for_timeout(500)
+        # Input ASINs
+        await self.input_asins(page, group)
+        # Click 'Test sample ASINs'
+        await self.click_test_sample_asins(page)
+        # Export results
+        await self.export_results(page, class_name, export_dir, class_search_url)
+
+    async def wait_for_visible_enabled(self, locator, page, retries=15, delay=200):
+        for _ in range(retries):
+            try:
+                if await locator.is_visible() and await locator.is_enabled():
+                    return True
+            except Exception:
+                pass
+            await page.wait_for_timeout(delay)
+        return False
+
+    async def click_sample_test_btn(self, page):
+        try:
+            btn = page.locator('#app-content > div > div > div:nth-child(1) > div > div.awsui-util-action-stripe-large > div.awsui-util-action-stripe-group.awsui-util-pv-n > awsui-button:nth-child(1) > a')
+            await btn.wait_for(timeout=5000)
+            await btn.click()
+        except Exception:
+            try:
+                btn = page.locator('xpath=//*[@id="app-content"]/div/div/div[1]/div/div[2]/div[2]/awsui-button[1]/a')
+                await btn.wait_for(timeout=2000)
+                await btn.click()
+            except Exception as e:
+                self.update_log(f"Could not click 'New sample ASINs test' button: {str(e)}")
+
+    async def uncheck_sample_asins_box(self, page):
+        try:
+            checkbox = page.locator('input[type="checkbox"]')
+            label = await checkbox.evaluate_handle('el => el.parentElement.textContent')
+            if 'Include sample ASINs provided during the class authoring process' in await label.json_value():
+                if await checkbox.is_checked():
+                    await checkbox.click()
+                    self.update_log("Unchecked the 'Include sample ASINs' box.")
+        except Exception as e:
+            self.update_log(f"Could not uncheck the box: {str(e)}")
+
+    async def input_asins(self, page, group):
+        try:
+            await page.wait_for_selector('textarea[placeholder^="Enter ASIN"]', timeout=10000)
+            asin_inputs = page.locator('textarea[placeholder^="Enter ASIN"]')
+            count = await asin_inputs.count()
+            asin_input_area = None
+            asin_input_index = 0
+            if count > 1:
+                ids = []
+                for idx in range(count):
+                    handle = asin_inputs.nth(idx)
+                    id_val = await handle.get_attribute('id')
+                    ids.append(id_val)
+                self.update_log(f"Found {count} ASIN textareas with ids: {ids}")
+                for idx in range(count):
+                    handle = asin_inputs.nth(idx)
+                    visible = await handle.is_visible()
+                    enabled = await handle.is_enabled()
+                    if visible and enabled:
+                        asin_input_area = handle
+                        asin_input_index = idx
+                        break
+            else:
+                asin_input_area = asin_inputs.first
+            asins = group['asin_id'].astype(str).tolist()
+            asin_text = '\n'.join(asins)
+            await asin_input_area.fill(asin_text)
+            self.update_log(f"Filled ASINs textarea (index {asin_input_index}) with {len(asins)} ASINs.")
+            await page.wait_for_timeout(500)
+        except Exception as e:
+            self.update_log(f"Could not input ASINs: {str(e)}")
+
+    async def click_test_sample_asins(self, page):
+        try:
+            test_btn = page.locator('button:has(span:text("Test sample ASINs")), button:has-text("Test sample ASINs")')
+            await test_btn.wait_for(timeout=5000)
+            await test_btn.click()
+            self.update_log("Clicked 'Test sample ASINs' button.")
+        except Exception as e:
+            self.update_log(f"Could not click 'Test sample ASINs' button: {str(e)}")
+
+    async def export_results(self, page, class_name, export_dir, class_search_url):
+        try:
+            export_btn = page.locator('#app-content > div > div:nth-child(3) > div.test-sample-asins-component > div:nth-child(4) > awsui-table > div > div.awsui-table-heading-container > div > div.awsui-table-header > span > div > div.awsui-util-action-stripe-group > awsui-button > button')
+            await export_btn.wait_for(state="visible", timeout=120000)
+            await export_btn.scroll_into_view_if_needed()
+            while not await export_btn.is_enabled():
+                await page.wait_for_timeout(500)
+            self.update_log("ASINs tested, export button is now enabled.")
+            await export_btn.hover()
+            await page.wait_for_timeout(200)
+            async with page.expect_download() as download_info:
+                await export_btn.click(force=True)
+            download = await download_info.value
+            class_export_name = os.path.join(export_dir, f"export_{class_name.replace('/', '_').replace(' ', '_')}.xlsx")
+            await download.save_as(class_export_name)
+            self.update_log(f"Downloaded export for class {class_name} as {class_export_name}")
+
+            # Robust conversion to CSV (like FS Pre-filter Export)
+            import shutil
+            try:
+                try:
+                    df = pd.read_excel(class_export_name)
+                except Exception:
+                    # Try reading as CSV
+                    try:
+                        df = pd.read_csv(class_export_name)
+                        class_export_csv = class_export_name.replace('.xlsx', '.csv')
+                        df.to_csv(class_export_csv, index=False)
+                        self.update_log(f"Downloaded file was CSV, saved as: {class_export_csv}")
+                        try:
+                            os.remove(class_export_name)
+                        except Exception:
+                            pass
+                        class_export_name = class_export_csv
+                    except Exception as e:
+                        self.update_log(f"Downloaded file is not Excel or CSV: {str(e)}")
+                        return
+                else:
+                    class_export_csv = class_export_name.replace('.xlsx', '.csv')
+                    df.to_csv(class_export_csv, index=False)
+                    os.remove(class_export_name)
+                    self.update_log(f"Converted export for class {class_name} to CSV: {class_export_csv}")
+            except Exception as e:
+                self.update_log(f"Could not convert export for class {class_name} to CSV: {str(e)}")
+
+            await page.goto(class_search_url, wait_until="domcontentloaded")
+            self.update_log("Returned to fresh Class Search page for next class.")
+        except Exception as e:
+            self.update_log(f"Could not export results for class {class_name}: {str(e)}")
+
+    async def collate_exports(self, export_dir):
+        try:
+            # Collate all CSV exports in the export_dir
+            all_files = glob.glob(os.path.join(export_dir, 'export_*.csv'))
+            if all_files:
+                dfs = []
+                for file in all_files:
+                    try:
+                        df = pd.read_csv(file)
+                    except Exception:
+                        self.update_log(f"Could not read file {file} as CSV. Skipping.")
+                        continue
+                    # Sanitize all column names
+                    df.columns = [self.sanitize_excel_column(str(col)) for col in df.columns]
+                    df['source_file'] = os.path.basename(file)
+                    dfs.append(df)
+                if dfs:
+                    combined = pd.concat(dfs, ignore_index=True)
+                    # Sanitize again after concat in case of new columns
+                    combined.columns = [self.sanitize_excel_column(str(col)) for col in combined.columns]
+                    # Save as CSV with present date in the export_dir
+                    combined_file = os.path.join(export_dir, f"collated_exports_{datetime.date.today()}.csv")
+                    combined.to_csv(combined_file, index=False)
+                    self.update_log(f"Collated all exports into {combined_file}")
+        except Exception as e:
+            self.update_log(f"Error collating exports: {str(e)}")
+
+    def start_processing(self):
+        if not self.is_processing:
+            self.is_processing = True
+            self.start_button.configure(state="disabled")
+            self.stop_button.configure(state="normal")
+            self.loop.create_task(self.process_asins())
+
+    def _run_asyncio_loop(self):
+        try:
+            self.loop.call_soon(self.loop.stop)
+            self.loop.run_forever()
+        except Exception as e:
+            logging.error(f"Asyncio loop error: {str(e)}", exc_info=True)
+        self.after(100, self._run_asyncio_loop)
+
+    def stop_processing(self):
+        if self.is_processing:
+            self.is_processing = False
+            self.update_status("Stopping...")
+            self.update_log("Stop requested by user")
+            self.start_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
+
+    def sanitize_excel_column(self, col_name):
+        invalid_chars = ['/', '\\', '?', '*', '[', ']', ':', ';', '\n', '\r', '\t', '|']
+        for ch in invalid_chars:
+            col_name = col_name.replace(ch, '_')
+        return col_name[:255]
+
+def main():
+    os.environ['PYPPETEER_CHROMIUM_REVISION'] = ''
+    try:
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        app = XCPToolGUI()
+        app.mainloop()
+    except Exception as e:
+        logging.error(f"Application error: {str(e)}", exc_info=True)
+        messagebox.showerror("Error", f"Application error: {str(e)}")
+
+if __name__ == "__main__":
+    main()
